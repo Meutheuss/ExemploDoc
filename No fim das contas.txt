@@ -1,0 +1,788 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
+import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, query } from 'firebase/firestore';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, Sector } from 'recharts';
+import { ArrowLeft, PlusCircle, Calendar, DollarSign, Edit, Copy, Trash2, Sun, Moon, Filter, ChevronsUpDown, ChevronDown, ChevronUp, Info, Sparkles, Menu, X, ChevronsLeft, ChevronsRight } from 'lucide-react';
+
+// --- ATENÇÃO: Configuração do Firebase ---
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'no-fim-das-contas';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+// --- Inicialização do Firebase ---
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// --- Constantes ---
+const CATEGORIES = {
+    income: ['Salário', 'Freelance', 'Investimentos', 'Vendas', 'Outras Receitas'],
+    expense: ['Moradia', 'Alimentação', 'Transporte', 'Saúde', 'Lazer', 'Educação', 'Contas', 'Compras', 'Impostos', 'Outras Despesas']
+};
+
+// --- Componentes de UI ---
+
+const Card = ({ title, value, icon, detailAction }) => (
+    <div className="bg-gray-800 p-6 rounded-2xl shadow-lg flex flex-col justify-between text-white relative">
+        <div>
+            <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-300">{title}</h3>
+                {icon}
+            </div>
+            <p className="text-3xl font-bold">{value}</p>
+        </div>
+        {detailAction && (
+            <button onClick={detailAction} className="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors">
+                <Info size={20} />
+            </button>
+        )}
+    </div>
+);
+
+const Button = ({ onClick, children, className = '', disabled = false }) => (
+    <button
+        onClick={onClick}
+        disabled={disabled}
+        className={`bg-indigo-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-indigo-700 transition-all duration-300 flex items-center justify-center gap-2 disabled:bg-gray-500 disabled:cursor-not-allowed ${className}`}
+    >
+        {children}
+    </button>
+);
+
+const Input = ({ value, onChange, placeholder, type = 'text', className = '' }) => (
+    <input
+        type={type}
+        value={value}
+        onChange={onChange}
+        placeholder={placeholder}
+        className={`w-full bg-gray-700 text-white border border-gray-600 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 ${className}`}
+    />
+);
+
+const Select = ({ value, onChange, children, className = '' }) => (
+    <select
+        value={value}
+        onChange={onChange}
+        className={`w-full bg-gray-700 text-white border border-gray-600 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 appearance-none ${className}`}
+        style={{ backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%239ca3af' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`, backgroundPosition: 'right 0.5rem center', backgroundRepeat: 'no-repeat', backgroundSize: '1.5em 1.5em' }}
+    >
+        {children}
+    </select>
+);
+
+const Modal = ({ isOpen, onClose, children }) => {
+    if (!isOpen) return null;
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex justify-center items-center z-50 p-4">
+            <div className="bg-gray-800 rounded-2xl shadow-2xl p-8 w-full max-w-md m-4 relative">
+                <button onClick={onClose} className="absolute top-4 right-4 text-gray-400 hover:text-white p-1 rounded-full bg-gray-700/50 hover:bg-gray-700"><X size={20} /></button>
+                {children}
+            </div>
+        </div>
+    );
+};
+
+const ConfirmationModal = ({ isOpen, onClose, onConfirm, title, message }) => {
+    if (!isOpen) return null;
+    return (
+        <Modal isOpen={isOpen} onClose={onClose}>
+            <div className="text-center">
+                <h2 className="text-2xl font-bold text-white mb-4">{title}</h2>
+                <p className="text-gray-300 mb-8">{message}</p>
+                <div className="flex justify-center gap-4">
+                    <Button onClick={onClose} className="bg-gray-600 hover:bg-gray-700">Cancelar</Button>
+                    <Button onClick={onConfirm} className="bg-red-600 hover:bg-red-700">Confirmar</Button>
+                </div>
+            </div>
+        </Modal>
+    );
+};
+
+// --- Componentes de Análise e Gráficos ---
+
+const GeminiAnalysis = ({ transactions }) => {
+    const [analysis, setAnalysis] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    const MarkdownRenderer = ({ content }) => {
+        const htmlContent = useMemo(() => {
+            if (!content) return '';
+            return content
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/### (.*?)(?:\n|$)/g, '<h3 class="text-lg font-semibold mt-4 mb-2 text-indigo-300">$1</h3>')
+                .replace(/## (.*?)(?:\n|$)/g, '<h2 class="text-xl font-bold mt-6 mb-3 text-indigo-300">$1</h2>')
+                .replace(/# (.*?)(?:\n|$)/g, '<h1 class="text-2xl font-bold mt-8 mb-4 text-indigo-300">$1</h1>')
+                .replace(/^- (.*?)(?:\n|$)/gm, '<li class="ml-5 list-disc mb-1">$1</li>')
+                .replace(/(<li>.*<\/li>)/gs, '<ul>$1</ul>')
+                .replace(/\n/g, '<br />');
+        }, [content]);
+        return <div className="prose prose-invert text-gray-300" dangerouslySetInnerHTML={{ __html: htmlContent }} />;
+    };
+
+    const handleAnalyze = async () => {
+        setIsLoading(true);
+        setError(null);
+        setAnalysis('');
+        const prompt = `Como um especialista em finanças pessoais, analise os seguintes dados de transações de um usuário brasileiro. Forneça um resumo dos seus hábitos de gastos, identifique as 3 principais categorias de despesas e ofereça 3 dicas práticas e acionáveis para economizar dinheiro com base nesses dados. Formate a resposta em markdown, usando títulos e listas. Seja claro e direto. Dados das transações: ${JSON.stringify(transactions.map(({ description, amount, category, type }) => ({ description, amount, category, type })))}`;
+
+        try {
+            const payload = { contents: [{ role: "user", parts: [{ text: prompt }] }] };
+            const apiKey = ""; 
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+            const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            if (!response.ok) throw new Error(`Erro na API: ${response.statusText}`);
+            const result = await response.json();
+            if (result.candidates?.[0]?.content?.parts?.[0]?.text) {
+                setAnalysis(result.candidates[0].content.parts[0].text);
+            } else {
+                throw new Error("Resposta da API inválida ou vazia.");
+            }
+        } catch (e) {
+            console.error(e);
+            setError("Não foi possível obter a análise. Tente novamente mais tarde.");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <div className="space-y-4">
+            <p className="text-gray-400">Obtenha insights sobre seus gastos e dicas para economizar com a ajuda da IA.</p>
+            <Button onClick={handleAnalyze} disabled={isLoading || transactions.length === 0} className="bg-purple-600 hover:bg-purple-700">
+                {isLoading ? (<><div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div><span>Analisando...</span></>) : (<><Sparkles size={20} /> Gerar Análise Financeira ✨</>)}
+            </Button>
+            {transactions.length === 0 && !isLoading && <p className="text-yellow-400 text-sm">Adicione transações neste período para gerar uma análise.</p>}
+            {error && <div className="bg-red-900/50 border border-red-700 text-red-300 px-4 py-3 rounded-lg">{error}</div>}
+            {analysis && (<div className="bg-gray-900/50 p-6 rounded-lg mt-4 border border-gray-700"><MarkdownRenderer content={analysis} /></div>)}
+        </div>
+    );
+};
+
+const ActiveShapePieChart = ({ data }) => {
+    const [activeIndex, setActiveIndex] = useState(0);
+    const onPieEnter = (_, index) => setActiveIndex(index);
+    const renderActiveShape = (props) => {
+        const RADIAN = Math.PI / 180;
+        const { cx, cy, midAngle, innerRadius, outerRadius, startAngle, endAngle, fill, payload, percent, value } = props;
+        const sin = Math.sin(-RADIAN * midAngle);
+        const cos = Math.cos(-RADIAN * midAngle);
+        const sx = cx + (outerRadius + 10) * cos;
+        const sy = cy + (outerRadius + 10) * sin;
+        const mx = cx + (outerRadius + 30) * cos;
+        const my = cy + (outerRadius + 30) * sin;
+        const ex = mx + (cos >= 0 ? 1 : -1) * 22;
+        const ey = my;
+        const textAnchor = cos >= 0 ? 'start' : 'end';
+        return (
+            <g>
+                <text x={cx} y={cy} dy={8} textAnchor="middle" fill={fill} className="font-bold text-lg">{payload.name}</text>
+                <Sector cx={cx} cy={cy} innerRadius={innerRadius} outerRadius={outerRadius} startAngle={startAngle} endAngle={endAngle} fill={fill} />
+                <Sector cx={cx} cy={cy} startAngle={startAngle} endAngle={endAngle} innerRadius={outerRadius + 6} outerRadius={outerRadius + 10} fill={fill} />
+                <path d={`M${sx},${sy}L${mx},${my}L${ex},${ey}`} stroke={fill} fill="none" />
+                <circle cx={ex} cy={ey} r={2} fill={fill} stroke="none" />
+                <text x={ex + (cos >= 0 ? 1 : -1) * 12} y={ey} textAnchor={textAnchor} fill="#fff">{`R$ ${value.toFixed(2)}`}</text>
+                <text x={ex + (cos >= 0 ? 1 : -1) * 12} y={ey} dy={18} textAnchor={textAnchor} fill="#999">{`( ${(percent * 100).toFixed(2)}%)`}</text>
+            </g>
+        );
+    };
+    const COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff8042', '#0088FE', '#00C49F', '#FFBB28'];
+    return (
+        <ResponsiveContainer width="100%" height={400}>
+            <PieChart>
+                <Pie activeIndex={activeIndex} activeShape={renderActiveShape} data={data} cx="50%" cy="50%" innerRadius={80} outerRadius={120} fill="#8884d8" dataKey="value" onMouseEnter={onPieEnter}>
+                    {data.map((entry, index) => (<Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />))}
+                </Pie>
+            </PieChart>
+        </ResponsiveContainer>
+    );
+};
+
+const EvolutionChart = ({ data }) => {
+    const formatCurrency = (value) => value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    return (
+        <ResponsiveContainer width="100%" height={400}>
+            <BarChart data={data} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#4a5568" />
+                <XAxis dataKey="name" stroke="#a0aec0" />
+                <YAxis stroke="#a0aec0" tickFormatter={formatCurrency} />
+                <Tooltip contentStyle={{ backgroundColor: '#2d3748', border: 'none', borderRadius: '10px' }} labelStyle={{ color: '#e2e8f0' }} itemStyle={{ fontWeight: 'bold' }} formatter={(value) => formatCurrency(value)} />
+                <Legend wrapperStyle={{ color: '#e2e8f0' }} />
+                <Bar dataKey="Receitas" stackId="a" fill="#48bb78" radius={[10, 10, 0, 0]} />
+                <Bar dataKey="Despesas" stackId="a" fill="#f56565" radius={[10, 10, 0, 0]} />
+            </BarChart>
+        </ResponsiveContainer>
+    );
+};
+
+// --- Componentes de Formulário ---
+
+const TransactionForm = ({ onSave, onClose, transaction, userId }) => {
+    const [type, setType] = useState(transaction?.type || 'expense');
+    const [description, setDescription] = useState(transaction?.description || '');
+    const [amount, setAmount] = useState(transaction?.amount || '');
+    const [date, setDate] = useState(transaction?.date || new Date().toISOString().split('T')[0]);
+    const [category, setCategory] = useState(transaction?.category || '');
+    
+    useEffect(() => {
+        // Reset category if type changes and category is not in the new type's list
+        if (!CATEGORIES[type].includes(category)) {
+            setCategory('');
+        }
+    }, [type, category]);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        if (!description || !amount || !date || !category) return;
+        const transactionData = { description, amount: parseFloat(amount), date, type, category, userId };
+        await onSave(transactionData);
+        onClose();
+    };
+
+    return (
+        <form onSubmit={handleSubmit} className="space-y-6">
+            <h2 className="text-2xl font-bold text-white text-center">{transaction?.id ? 'Editar Transação' : 'Adicionar Transação'}</h2>
+            <Input placeholder="Descrição" value={description} onChange={e => setDescription(e.target.value)} />
+            <Input placeholder="Valor" type="number" value={amount} onChange={e => setAmount(e.target.value)} />
+            <Input type="date" value={date} onChange={e => setDate(e.target.value)} />
+            <Select value={type} onChange={e => setType(e.target.value)}>
+                <option value="expense">Despesa</option>
+                <option value="income">Receita</option>
+            </Select>
+            <Select value={category} onChange={e => setCategory(e.target.value)}>
+                <option value="" disabled>Selecione uma categoria</option>
+                {CATEGORIES[type].map(cat => <option key={cat} value={cat}>{cat}</option>)}
+            </Select>
+            <Button type="submit" className="w-full">{transaction?.id ? 'Salvar Alterações' : 'Adicionar'}</Button>
+        </form>
+    );
+};
+
+const RecurringTransactionForm = ({ onSave, onClose, userId }) => {
+    const [type, setType] = useState('expense');
+    const [description, setDescription] = useState('');
+    const [amount, setAmount] = useState('');
+    const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
+    const [category, setCategory] = useState('');
+    const [duration, setDuration] = useState(12);
+    
+    useEffect(() => {
+        if (!CATEGORIES[type].includes(category)) setCategory('');
+    }, [type, category]);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        if (!description || !amount || !startDate || !category || !duration) return;
+        const transactionsToCreate = [];
+        const baseDate = new Date(startDate + 'T12:00:00Z');
+        const recurrenceId = crypto.randomUUID();
+        for (let i = 0; i < duration; i++) {
+            const transactionDate = new Date(baseDate);
+            transactionDate.setUTCMonth(baseDate.getUTCMonth() + i);
+            transactionsToCreate.push({ description, amount: parseFloat(amount), date: transactionDate.toISOString().split('T')[0], type, category, userId, isRecurring: true, recurrenceId });
+        }
+        await onSave(transactionsToCreate);
+        onClose();
+    };
+
+    return (
+        <form onSubmit={handleSubmit} className="space-y-6">
+            <h2 className="text-2xl font-bold text-white text-center">Transação Recorrente</h2>
+            <p className="text-sm text-gray-400 text-center">Esta transação será adicionada mensalmente a partir da data de início, pela duração escolhida.</p>
+            <Input placeholder="Descrição" value={description} onChange={e => setDescription(e.target.value)} />
+            <Input placeholder="Valor Mensal" type="number" value={amount} onChange={e => setAmount(e.target.value)} />
+            <Input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} />
+            <Select value={type} onChange={e => setType(e.target.value)}>
+                <option value="expense">Despesa</option>
+                <option value="income">Receita</option>
+            </Select>
+            <Select value={category} onChange={e => setCategory(e.target.value)}>
+                <option value="" disabled>Selecione uma categoria</option>
+                {CATEGORIES[type].map(cat => <option key={cat} value={cat}>{cat}</option>)}
+            </Select>
+            <Input placeholder="Duração (meses)" type="number" value={duration} onChange={e => setDuration(parseInt(e.target.value))} />
+            <Button type="submit" className="w-full">Adicionar Recorrência</Button>
+        </form>
+    );
+};
+
+// --- Componente de Filtro de Data ---
+const DateRangeFilter = ({ dateRange, setDateRange, setFilterPeriod }) => {
+    const handleDateChange = (e, field) => {
+        setDateRange(prev => ({ ...prev, [field]: e.target.value }));
+    };
+
+    const handleApply = () => {
+        if (dateRange.startDate && dateRange.endDate) {
+            setFilterPeriod('custom');
+        }
+    };
+    
+    const handleClear = () => {
+        setDateRange({ startDate: '', endDate: '' });
+        setFilterPeriod('month'); // Reset to default quick filter
+    };
+
+    return (
+        <div className="flex flex-col sm:flex-row items-center gap-2 bg-gray-800/50 p-3 rounded-lg">
+            <Input type="date" value={dateRange.startDate} onChange={e => handleDateChange(e, 'startDate')} className="bg-gray-700"/>
+            <span className="text-gray-400">até</span>
+            <Input type="date" value={dateRange.endDate} onChange={e => handleDateChange(e, 'endDate')} className="bg-gray-700"/>
+            <Button onClick={handleApply} className="!p-2 text-sm w-full sm:w-auto">Aplicar</Button>
+            <Button onClick={handleClear} className="!p-2 text-sm bg-gray-600 hover:bg-gray-700 w-full sm:w-auto">Limpar</Button>
+        </div>
+    );
+};
+
+
+// --- Telas Principais ---
+
+const Dashboard = ({ transactions, setCurrentView, setDetailFilters, dateRange, setDateRange }) => {
+    const [filterPeriod, setFilterPeriod] = useState('month');
+
+    const filteredTransactions = useMemo(() => {
+        const now = new Date();
+        return transactions.filter(t => {
+            const tDate = new Date(t.date + 'T12:00:00Z');
+            if (filterPeriod === 'custom' && dateRange.startDate && dateRange.endDate) {
+                const startDate = new Date(dateRange.startDate + 'T00:00:00Z');
+                const endDate = new Date(dateRange.endDate + 'T23:59:59Z');
+                return tDate >= startDate && tDate <= endDate;
+            }
+            if (filterPeriod === 'month') return tDate.getUTCMonth() === now.getUTCMonth() && tDate.getUTCFullYear() === now.getUTCFullYear();
+            if (filterPeriod === 'year') return tDate.getUTCFullYear() === now.getUTCFullYear();
+            return true;
+        });
+    }, [transactions, filterPeriod, dateRange]);
+
+    const { totalIncome, totalExpenses, balance } = useMemo(() => {
+        const income = filteredTransactions.filter(t => t.type === 'income').reduce((acc, t) => acc + t.amount, 0);
+        const expenses = filteredTransactions.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
+        return { totalIncome: income, totalExpenses: expenses, balance: income - expenses };
+    }, [filteredTransactions]);
+
+    const expensesByCategory = useMemo(() => {
+        const categories = {};
+        filteredTransactions.filter(t => t.type === 'expense').forEach(t => {
+            categories[t.category] = (categories[t.category] || 0) + t.amount;
+        });
+        return Object.entries(categories).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+    }, [filteredTransactions]);
+
+    const evolutionData = useMemo(() => {
+        const monthlyData = {};
+        filteredTransactions.forEach(t => {
+            const month = new Date(t.date + 'T12:00:00Z').toLocaleString('default', { month: 'short', year: '2-digit' });
+            if (!monthlyData[month]) {
+                monthlyData[month] = { name: month, Receitas: 0, Despesas: 0 };
+            }
+            if (t.type === 'income') {
+                monthlyData[month].Receitas += t.amount;
+            } else {
+                monthlyData[month].Despesas += t.amount;
+            }
+        });
+        // Simple sort by trying to parse month/year - a more robust solution would be better for production
+        return Object.values(monthlyData);
+    }, [filteredTransactions]);
+
+    const formatCurrency = (value) => value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const handleDetailClick = (filters) => { setDetailFilters(filters); setCurrentView('details'); };
+
+    return (
+        <div className="space-y-8">
+            <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+                <h1 className="text-2xl md:text-4xl font-bold text-white">Dashboard</h1>
+                <div className="flex items-center gap-4">
+                    <Filter size={20} className="text-gray-400 hidden sm:block" />
+                    <Select value={filterPeriod} onChange={(e) => setFilterPeriod(e.target.value)} className="w-32 sm:w-40">
+                        <option value="month">Este Mês</option>
+                        <option value="year">Este Ano</option>
+                        <option value="custom" disabled>Período</option>
+                    </Select>
+                </div>
+            </div>
+            
+            <DateRangeFilter dateRange={dateRange} setDateRange={setDateRange} setFilterPeriod={setFilterPeriod} />
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8">
+                <Card title="Receitas" value={formatCurrency(totalIncome)} icon={<DollarSign className="text-green-400" size={32} />} detailAction={() => handleDetailClick({ type: 'income', period: filterPeriod, dateRange })} />
+                <Card title="Despesas" value={formatCurrency(totalExpenses)} icon={<DollarSign className="text-red-400" size={32} />} detailAction={() => handleDetailClick({ type: 'expense', period: filterPeriod, dateRange })} />
+                <Card title="Saldo" value={formatCurrency(balance)} icon={<DollarSign className={balance >= 0 ? 'text-blue-400' : 'text-yellow-400'} size={32} />} detailAction={() => handleDetailClick({ period: filterPeriod, dateRange })} />
+            </div>
+
+            <div className="bg-gray-800 p-6 rounded-2xl shadow-lg">
+                <h2 className="text-xl font-semibold text-white mb-4">Evolução Financeira no Período</h2>
+                {evolutionData.length > 0 ? <EvolutionChart data={evolutionData} /> : <p className="text-gray-400 text-center py-16">Sem dados para exibir a evolução.</p>}
+            </div>
+            
+            <div className="bg-gray-800 p-6 rounded-2xl shadow-lg">
+                <h2 className="text-xl font-semibold text-white mb-4 flex items-center gap-2"><Sparkles className="text-purple-400" /> Análise Inteligente</h2>
+                <GeminiAnalysis transactions={filteredTransactions} />
+            </div>
+
+            <div className="bg-gray-800 p-6 rounded-2xl shadow-lg">
+                <div className="flex justify-between items-center">
+                    <h2 className="text-xl font-semibold text-white mb-4">Despesas por Categoria</h2>
+                    <button onClick={() => handleDetailClick({ type: 'expense', period: filterPeriod, dateRange, groupBy: 'category' })} className="text-gray-400 hover:text-white transition-colors"><Info size={20} /></button>
+                </div>
+                {expensesByCategory.length > 0 ? <ActiveShapePieChart data={expensesByCategory} /> : <p className="text-gray-400 text-center py-16">Nenhuma despesa no período.</p>}
+            </div>
+        </div>
+    );
+};
+
+const Transactions = ({ transactions, userId, dateRange, setDateRange }) => {
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [isRecurringModalOpen, setIsRecurringModalOpen] = useState(false);
+    const [editingTransaction, setEditingTransaction] = useState(null);
+    const [filterPeriod, setFilterPeriod] = useState('all');
+    const [sortConfig, setSortConfig] = useState({ key: 'date', direction: 'descending' });
+    const [deleteConfirmation, setDeleteConfirmation] = useState({ isOpen: false, id: null });
+
+    const sortedAndFilteredTransactions = useMemo(() => {
+        let sortableItems = [...transactions];
+        const now = new Date();
+        if (filterPeriod === 'custom' && dateRange.startDate && dateRange.endDate) {
+             const startDate = new Date(dateRange.startDate + 'T00:00:00Z');
+             const endDate = new Date(dateRange.endDate + 'T23:59:59Z');
+             sortableItems = sortableItems.filter(t => {
+                 const tDate = new Date(t.date + 'T12:00:00Z');
+                 return tDate >= startDate && tDate <= endDate;
+             });
+        } else if (filterPeriod !== 'all') {
+            sortableItems = sortableItems.filter(t => {
+                const tDate = new Date(t.date + 'T12:00:00Z');
+                if (filterPeriod === 'day') return tDate.toISOString().split('T')[0] === now.toISOString().split('T')[0];
+                if (filterPeriod === 'week') {
+                    const weekStart = new Date(now);
+                    weekStart.setDate(now.getDate() - now.getDay());
+                    const weekEnd = new Date(weekStart);
+                    weekEnd.setDate(weekStart.getDate() + 6);
+                    return tDate >= weekStart && tDate <= weekEnd;
+                }
+                if (filterPeriod === 'month') return tDate.getUTCMonth() === now.getUTCMonth() && tDate.getUTCFullYear() === now.getUTCFullYear();
+                if (filterPeriod === 'year') return tDate.getUTCFullYear() === now.getUTCFullYear();
+                return true;
+            });
+        }
+        sortableItems.sort((a, b) => {
+            if (a[sortConfig.key] < b[sortConfig.key]) return sortConfig.direction === 'ascending' ? -1 : 1;
+            if (a[sortConfig.key] > b[sortConfig.key]) return sortConfig.direction === 'ascending' ? 1 : -1;
+            return 0;
+        });
+        return sortableItems;
+    }, [transactions, sortConfig, filterPeriod, dateRange]);
+
+    const handleSort = (key) => {
+        let direction = 'ascending';
+        if (sortConfig.key === key && sortConfig.direction === 'ascending') direction = 'descending';
+        setSortConfig({ key, direction });
+    };
+    const getSortIcon = (key) => {
+        if (sortConfig.key !== key) return <ChevronsUpDown size={16} />;
+        if (sortConfig.direction === 'ascending') return <ChevronUp size={16} />;
+        return <ChevronDown size={16} />;
+    };
+    const handleSaveTransaction = async (transactionData) => {
+        try {
+            if (editingTransaction?.id) {
+                await updateDoc(doc(db, `artifacts/${appId}/users/${userId}/transactions`, editingTransaction.id), transactionData);
+            } else {
+                await addDoc(collection(db, `artifacts/${appId}/users/${userId}/transactions`), transactionData);
+            }
+        } catch (error) { console.error("Erro ao salvar transação: ", error); }
+    };
+    const handleSaveRecurring = async (transactionsToCreate) => {
+        try {
+            await Promise.all(transactionsToCreate.map(tx => addDoc(collection(db, `artifacts/${appId}/users/${userId}/transactions`), tx)));
+        } catch (error) { console.error("Erro ao salvar transações recorrentes: ", error); }
+    };
+    const handleEdit = (transaction) => { setEditingTransaction(transaction); setIsModalOpen(true); };
+    const handleDuplicate = (transaction) => { const { id, ...rest } = transaction; setEditingTransaction(rest); setIsModalOpen(true); };
+    const handleDeleteRequest = (id) => setDeleteConfirmation({ isOpen: true, id: id });
+    const handleDeleteConfirm = async () => {
+        if (deleteConfirmation.id) {
+            try {
+                await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/transactions`, deleteConfirmation.id));
+            } catch (error) {
+                console.error("Erro ao apagar transação: ", error);
+            } finally {
+                setDeleteConfirmation({ isOpen: false, id: null });
+            }
+        }
+    };
+    const formatCurrency = (value) => value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const formatDate = (dateString) => new Date(dateString + 'T12:00:00Z').toLocaleDateString('pt-BR', { year: 'numeric', month: '2-digit', day: '2-digit' });
+
+    return (
+        <>
+            <div className="space-y-6">
+                <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+                    <h1 className="text-2xl md:text-4xl font-bold text-white">Transações</h1>
+                    <div className="flex items-center gap-2 sm:gap-4 w-full md:w-auto">
+                        <Select value={filterPeriod} onChange={(e) => setFilterPeriod(e.target.value)} className="flex-grow sm:flex-grow-0 w-32 sm:w-40">
+                            <option value="all">Tudo</option>
+                            <option value="day">Hoje</option>
+                            <option value="week">Semana</option>
+                            <option value="month">Mês</option>
+                            <option value="year">Ano</option>
+                            <option value="custom" disabled>Período</option>
+                        </Select>
+                        <Button onClick={() => { setEditingTransaction(null); setIsModalOpen(true); }} className="!p-2 sm:!px-4 sm:!py-2"><PlusCircle size={20} /><span className="hidden sm:inline">Nova</span></Button>
+                        <Button onClick={() => setIsRecurringModalOpen(true)} className="bg-teal-600 hover:bg-teal-700 !p-2 sm:!px-4 sm:!py-2"><Calendar size={20} /><span className="hidden sm:inline">Recorrente</span></Button>
+                    </div>
+                </div>
+                
+                <DateRangeFilter dateRange={dateRange} setDateRange={setDateRange} setFilterPeriod={setFilterPeriod} />
+
+                <div className="hidden md:block bg-gray-800 rounded-2xl shadow-lg overflow-hidden">
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left text-gray-300">
+                            <thead className="bg-gray-700/50 text-xs text-gray-400 uppercase">
+                                <tr>
+                                    <th className="p-4 cursor-pointer" onClick={() => handleSort('date')}><div className="flex items-center gap-1">Data {getSortIcon('date')}</div></th>
+                                    <th className="p-4 cursor-pointer" onClick={() => handleSort('description')}><div className="flex items-center gap-1">Descrição {getSortIcon('description')}</div></th>
+                                    <th className="p-4 cursor-pointer" onClick={() => handleSort('category')}><div className="flex items-center gap-1">Categoria {getSortIcon('category')}</div></th>
+                                    <th className="p-4 cursor-pointer text-right" onClick={() => handleSort('amount')}><div className="flex items-center justify-end gap-1">Valor {getSortIcon('amount')}</div></th>
+                                    <th className="p-4 text-center">Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {sortedAndFilteredTransactions.map(t => (
+                                    <tr key={t.id} className="border-b border-gray-700 hover:bg-gray-700/50 transition-colors">
+                                        <td className="p-4">{formatDate(t.date)}</td>
+                                        <td className="p-4 font-medium text-white">{t.description}</td>
+                                        <td className="p-4"><span className="bg-gray-700 text-xs font-medium mr-2 px-2.5 py-0.5 rounded-full">{t.category}</span></td>
+                                        <td className={`p-4 text-right font-bold ${t.type === 'income' ? 'text-green-400' : 'text-red-400'}`}>{formatCurrency(t.amount)}</td>
+                                        <td className="p-4 text-center">
+                                            <div className="flex justify-center items-center gap-2">
+                                                <button onClick={() => handleEdit(t)} className="text-blue-400 hover:text-blue-300 p-1"><Edit size={18} /></button>
+                                                <button onClick={() => handleDuplicate(t)} className="text-purple-400 hover:text-purple-300 p-1"><Copy size={18} /></button>
+                                                <button onClick={() => handleDeleteRequest(t.id)} className="text-red-500 hover:text-red-400 p-1"><Trash2 size={18} /></button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                         {sortedAndFilteredTransactions.length === 0 && (<p className="text-center text-gray-400 py-16">Nenhuma transação encontrada.</p>)}
+                    </div>
+                </div>
+                <div className="md:hidden space-y-4">
+                    {sortedAndFilteredTransactions.map(t => (
+                        <div key={t.id} className="bg-gray-800 rounded-lg p-4 shadow-lg">
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <p className="font-bold text-white">{t.description}</p>
+                                    <p className="text-sm text-gray-400">{t.category}</p>
+                                    <p className="text-sm text-gray-500">{formatDate(t.date)}</p>
+                                </div>
+                                <p className={`font-bold text-lg ${t.type === 'income' ? 'text-green-400' : 'text-red-400'}`}>{formatCurrency(t.amount)}</p>
+                            </div>
+                            <div className="flex justify-end items-center gap-2 mt-2 border-t border-gray-700 pt-2">
+                                <button onClick={() => handleEdit(t)} className="text-blue-400 hover:text-blue-300 p-1"><Edit size={18} /></button>
+                                <button onClick={() => handleDuplicate(t)} className="text-purple-400 hover:text-purple-300 p-1"><Copy size={18} /></button>
+                                <button onClick={() => handleDeleteRequest(t.id)} className="text-red-500 hover:text-red-400 p-1"><Trash2 size={18} /></button>
+                            </div>
+                        </div>
+                    ))}
+                    {sortedAndFilteredTransactions.length === 0 && (<p className="text-center text-gray-400 py-16">Nenhuma transação encontrada.</p>)}
+                </div>
+            </div>
+            <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)}><TransactionForm onSave={handleSaveTransaction} onClose={() => setIsModalOpen(false)} transaction={editingTransaction} userId={userId} /></Modal>
+            <Modal isOpen={isRecurringModalOpen} onClose={() => setIsRecurringModalOpen(false)}><RecurringTransactionForm onSave={handleSaveRecurring} onClose={() => setIsRecurringModalOpen(false)} userId={userId} /></Modal>
+            <ConfirmationModal isOpen={deleteConfirmation.isOpen} onClose={() => setDeleteConfirmation({ isOpen: false, id: null })} onConfirm={handleDeleteConfirm} title="Confirmar Exclusão" message="Tem certeza que deseja apagar esta transação? Esta ação não pode ser desfeita."/>
+        </>
+    );
+};
+
+const DetailView = ({ transactions, filters, setCurrentView }) => {
+    const filteredTransactions = useMemo(() => {
+        return transactions.filter(t => {
+            const tDate = new Date(t.date + 'T12:00:00Z');
+            let periodMatch = false;
+            if (filters.period === 'custom' && filters.dateRange.startDate && filters.dateRange.endDate) {
+                const startDate = new Date(filters.dateRange.startDate + 'T00:00:00Z');
+                const endDate = new Date(filters.dateRange.endDate + 'T23:59:59Z');
+                periodMatch = tDate >= startDate && tDate <= endDate;
+            } else {
+                const now = new Date();
+                if (filters.period === 'month') periodMatch = tDate.getUTCMonth() === now.getUTCMonth() && tDate.getUTCFullYear() === now.getUTCFullYear();
+                else if (filters.period === 'year') periodMatch = tDate.getUTCFullYear() === now.getUTCFullYear();
+                else periodMatch = true;
+            }
+            let typeMatch = filters.type ? t.type === filters.type : true;
+            return periodMatch && typeMatch;
+        });
+    }, [transactions, filters]);
+
+    const total = filteredTransactions.reduce((acc, t) => acc + t.amount, 0);
+    const formatCurrency = (value) => value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const formatDate = (dateString) => new Date(dateString + 'T12:00:00Z').toLocaleDateString('pt-BR', { year: 'numeric', month: '2-digit', day: '2-digit' });
+    const getTitle = () => {
+        let title = 'Detalhes das Transações';
+        if (filters.type === 'income') title = 'Detalhes de Receitas';
+        if (filters.type === 'expense') title = 'Detalhes de Despesas';
+        if (filters.period !== 'custom') {
+            if (filters.period === 'month') title += ' do Mês';
+            if (filters.period === 'year') title += ' do Ano';
+        }
+        return title;
+    };
+
+    return (
+        <div className="space-y-6">
+            <div className="flex items-center gap-4">
+                <Button onClick={() => setCurrentView('dashboard')} className="!p-2"><ArrowLeft size={20} /></Button>
+                <h1 className="text-xl md:text-3xl font-bold text-white">{getTitle()}</h1>
+            </div>
+            <div className="bg-gray-800 rounded-2xl shadow-lg overflow-hidden">
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left text-gray-300">
+                        <thead className="bg-gray-700/50 text-xs text-gray-400 uppercase">
+                            <tr><th className="p-4">Data</th><th className="p-4">Descrição</th><th className="p-4">Categoria</th><th className="p-4 text-right">Valor</th></tr>
+                        </thead>
+                        <tbody>
+                            {filteredTransactions.map(t => (
+                                <tr key={t.id} className="border-b border-gray-700">
+                                    <td className="p-4">{formatDate(t.date)}</td>
+                                    <td className="p-4 font-medium text-white">{t.description}</td>
+                                    <td className="p-4"><span className="bg-gray-700 text-xs font-medium mr-2 px-2.5 py-0.5 rounded-full">{t.category}</span></td>
+                                    <td className={`p-4 text-right font-bold ${t.type === 'income' ? 'text-green-400' : 'text-red-400'}`}>{formatCurrency(t.amount)}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                        <tfoot className="font-bold text-white">
+                            <tr><td colSpan="3" className="p-4 text-right">Total:</td><td className="p-4 text-right">{formatCurrency(total)}</td></tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const Sidebar = ({ currentView, setCurrentView, theme, toggleTheme, isCollapsed, setCollapsed, closeSidebar }) => (
+    <aside className={`bg-gray-800 text-white flex flex-col shadow-2xl transition-all duration-300 ${isCollapsed ? 'w-20' : 'w-64'}`}>
+        <div className={`text-center py-4 mb-10 ${isCollapsed ? 'px-2' : 'px-4'}`}>
+            <h2 className={`font-bold text-indigo-400 transition-all duration-300 ${isCollapsed ? 'text-xl' : 'text-2xl'}`}>{isCollapsed ? 'NFDC' : 'No Fim das Contas'}</h2>
+        </div>
+        <nav className="flex-grow px-4">
+            <ul>
+                <li className={`mb-2 rounded-lg ${currentView === 'dashboard' ? 'bg-indigo-600' : ''}`}>
+                    <a href="#" onClick={() => { setCurrentView('dashboard'); closeSidebar(); }} className="flex items-center p-3 hover:bg-indigo-500 rounded-lg transition-colors">
+                        <BarChart size={20} className="flex-shrink-0" />
+                        {!isCollapsed && <span className="ml-3">Dashboard</span>}
+                    </a>
+                </li>
+                <li className={`mb-2 rounded-lg ${currentView === 'transactions' ? 'bg-indigo-600' : ''}`}>
+                    <a href="#" onClick={() => { setCurrentView('transactions'); closeSidebar(); }} className="flex items-center p-3 hover:bg-indigo-500 rounded-lg transition-colors">
+                        <ChevronsUpDown size={20} className="flex-shrink-0" />
+                        {!isCollapsed && <span className="ml-3">Transações</span>}
+                    </a>
+                </li>
+            </ul>
+        </nav>
+        <div className="px-4 pb-4">
+            <button onClick={toggleTheme} className="w-full flex items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors mb-2">
+                {theme === 'dark' ? <Sun className="flex-shrink-0" /> : <Moon className="flex-shrink-0" />}
+                {!isCollapsed && <span className="ml-3">{theme === 'dark' ? 'Claro' : 'Escuro'}</span>}
+            </button>
+            <button onClick={() => setCollapsed(!isCollapsed)} className="w-full hidden md:flex items-center justify-center p-3 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors">
+                {isCollapsed ? <ChevronsRight className="flex-shrink-0"/> : <ChevronsLeft className="flex-shrink-0"/>}
+            </button>
+        </div>
+    </aside>
+);
+
+export default function App() {
+    const [theme, setTheme] = useState('dark');
+    const [currentView, setCurrentView] = useState('dashboard');
+    const [transactions, setTransactions] = useState([]);
+    const [userId, setUserId] = useState(null);
+    const [isAuthReady, setIsAuthReady] = useState(false);
+    const [detailFilters, setDetailFilters] = useState({});
+    const [isLoading, setIsLoading] = useState(true);
+    const [isSidebarCollapsed, setSidebarCollapsed] = useState(false);
+    const [isMobileMenuOpen, setMobileMenuOpen] = useState(false);
+    const [dateRange, setDateRange] = useState({ startDate: '', endDate: '' });
+
+    useEffect(() => {
+        const root = window.document.documentElement;
+        root.classList.remove(theme === 'dark' ? 'light' : 'dark');
+        root.classList.add(theme);
+    }, [theme]);
+
+    useEffect(() => {
+        const unsubscribe = onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                setUserId(user.uid);
+            } else {
+                try {
+                    const initialToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                    if (initialToken) await signInWithCustomToken(auth, initialToken);
+                    else await signInAnonymously(auth);
+                } catch (error) { console.error("Authentication error:", error); }
+            }
+            setIsAuthReady(true);
+        });
+        return () => unsubscribe();
+    }, []);
+
+    useEffect(() => {
+        if (isAuthReady && userId) {
+            const q = query(collection(db, `artifacts/${appId}/users/${userId}/transactions`));
+            const unsubscribe = onSnapshot(q, (querySnapshot) => {
+                const transactionsData = querySnapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+                setTransactions(transactionsData);
+                setIsLoading(false);
+            }, (error) => {
+                console.error("Error fetching transactions: ", error);
+                setIsLoading(false);
+            });
+            return () => unsubscribe();
+        } else if (isAuthReady && !userId) {
+            setIsLoading(false);
+        }
+    }, [isAuthReady, userId]);
+
+    const toggleTheme = () => setTheme(theme === 'dark' ? 'light' : 'dark');
+
+    const renderView = () => {
+        if (isLoading) return <div className="text-center text-white p-10"><p>Carregando seus dados...</p></div>;
+        switch (currentView) {
+            case 'transactions': return <Transactions transactions={transactions} userId={userId} dateRange={dateRange} setDateRange={setDateRange} />;
+            case 'details': return <DetailView transactions={transactions} filters={detailFilters} setCurrentView={setCurrentView} />;
+            case 'dashboard':
+            default: return <Dashboard transactions={transactions} setCurrentView={setCurrentView} setDetailFilters={setDetailFilters} dateRange={dateRange} setDateRange={setDateRange} />;
+        }
+    };
+
+    return (
+        <div className={`min-h-screen font-sans transition-colors duration-500 ${theme === 'dark' ? 'bg-gray-900' : 'bg-gray-100'}`}>
+            <div className="flex h-screen">
+                <div className={`fixed inset-0 z-40 md:hidden transition-transform duration-300 ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+                    <div className="absolute inset-0 bg-black/60" onClick={() => setMobileMenuOpen(false)}></div>
+                    <div className="relative h-full">
+                       <Sidebar currentView={currentView} setCurrentView={setCurrentView} theme={theme} toggleTheme={toggleTheme} isCollapsed={false} setCollapsed={() => {}} closeSidebar={() => setMobileMenuOpen(false)} />
+                    </div>
+                </div>
+                <div className="hidden md:flex md:flex-shrink-0">
+                    <Sidebar currentView={currentView} setCurrentView={setCurrentView} theme={theme} toggleTheme={toggleTheme} isCollapsed={isSidebarCollapsed} setCollapsed={setSidebarCollapsed} closeSidebar={() => {}}/>
+                </div>
+                <div className="flex-1 flex flex-col overflow-hidden">
+                    <header className="md:hidden bg-gray-800 p-4 text-white flex items-center shadow-lg z-30">
+                        <button onClick={() => setMobileMenuOpen(true)}>
+                            <Menu size={24} />
+                        </button>
+                        <h2 className="ml-4 text-lg font-bold">No Fim das Contas</h2>
+                    </header>
+                    <main className="flex-1 p-4 md:p-8 overflow-auto pt-8 md:pt-8">
+                        {renderView()}
+                    </main>
+                </div>
+            </div>
+        </div>
+    );
+}
